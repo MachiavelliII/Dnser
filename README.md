@@ -1,2 +1,2 @@
 # Dnser
-Dnser Is a subdomain gusser tool written In go
+Dnser is a free and open=source subdomain guesser tool written in go.
