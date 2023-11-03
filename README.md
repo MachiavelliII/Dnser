@@ -33,3 +33,6 @@ Usage of ./dnser:
         The wordlist path to use. [Required]
          Example: /path/to/wordlist
 ```
+
+https://github.com/MachiavelliII/Dnser/assets/145562237/833b5334-2b28-484f-bd61-327ea2fd42ca
+
