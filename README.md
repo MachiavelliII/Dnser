@@ -2,6 +2,8 @@
 Dnser is a free and open-source subdomain guesser tool written in Go.
 # Installation
 ```
+git clone https://github.com/MachiavelliII/Dnser.git
+cd Dnser
 go build dnser.go
 ```
 # Usage
