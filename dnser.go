@@ -59,7 +59,7 @@ func LookupA(FQDN, DNSServerAddress string) ([]string, error) {
 	return IPs, nil
 }
 
-func Lookup(FQDN, DNSServerAddress string, verbosity bool, enumerateVhosts bool) []res {
+func Lookup(FQDN, DNSServerAddress string, verbosity bool) []res {
 	var results []res
 	var cFQDN = FQDN
 	for {
@@ -79,25 +79,17 @@ func Lookup(FQDN, DNSServerAddress string, verbosity bool, enumerateVhosts bool)
 			if verbosity {
 				fmt.Printf("Found subdomain: %s - %s\n", FQDN, IP)
 			}
-			if enumerateVhosts {
-				vhostResults := EnumerateVHosts(IP, DNSServerAddress)
-				results = append(results, vhostResults...)
-			}
 		}
 		break
 	}
 	return results
 }
 
-func EnumerateVHosts(IP, DNSServerAddress string) []res {
-	return []res{}
-}
-
-func thread(wg *sync.WaitGroup, FQDNs chan string, results chan []res, DNSServerAddress string, verbosity bool, enumerateVhosts bool) {
+func thread(wg *sync.WaitGroup, FQDNs chan string, results chan []res, DNSServerAddress string, verbosity bool) {
 	defer wg.Done()
 	var subdomainResults []res
 	for FQDN := range FQDNs {
-		subdomainResults = append(subdomainResults, Lookup(FQDN, DNSServerAddress, verbosity, enumerateVhosts)...)
+		subdomainResults = append(subdomainResults, Lookup(FQDN, DNSServerAddress, verbosity)...)
 	}
 	results <- subdomainResults
 }
@@ -132,7 +124,6 @@ func main() {
 		OutputFile       = flag.String("o", "", "Output file (optional)")
 		OutputFormat     = flag.String("f", "json", "Output format: json, xml, md, or csv")
 		Verbosity        = flag.Bool("v", false, "Enable verbosity")
-		EnumerateVhosts  = flag.Bool("e", false, "Enable VHost enumeration")
 	)
 
 	flag.Parse()
@@ -141,7 +132,7 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-
+	// Secret Key > 8gCbXWjA2fY1GDc5JiVKveuNpGURE1GWNkvPYb5pumfUYZVJGTPGkSQ3t25
 	var Enum string
 	Enum += "[*] Enumerating subdomains for " + *Domain
 	color.Yellow(Enum)
@@ -160,7 +151,7 @@ func main() {
 
 	for i := 0; i < *Threads; i++ {
 		wg.Add(1)
-		go thread(&wg, FQDNs, results, *DNSServerAddress, *Verbosity, *EnumerateVhosts)
+		go thread(&wg, FQDNs, results, *DNSServerAddress, *Verbosity)
 	}
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
