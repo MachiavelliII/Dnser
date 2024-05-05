@@ -20,7 +20,6 @@ Usage of ./dnser:
   -d string
         The domain you want to enumerate. [Required]
         Example: website.com
-  -e    Enable VHost enumeration
   -f string
         Output format: json, xml, md, or csv (default "json")
   -o string
