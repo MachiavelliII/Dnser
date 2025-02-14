@@ -19,56 +19,78 @@ import (
 	"github.com/miekg/dns"
 )
 
-func LookupCNAME(FQDN, DNSServerAddress string) ([]string, error) {
-	var msg dns.Msg
+var outputMutex sync.Mutex
+
+func LookupCNAME(FQDN string, DNSServers []string, verbosity int) ([]string, error) {
 	var FQDNs []string
-	msg.SetQuestion(dns.Fqdn(FQDN), dns.TypeCNAME)
-	In, err := dns.Exchange(&msg, DNSServerAddress)
-	if err != nil {
-		return FQDNs, err
-	}
-	if len(In.Answer) < 1 {
-		return FQDNs, errors.New("No Records Found!")
-	}
-	for _, answer := range In.Answer {
-		if C, ok := answer.(*dns.CNAME); ok {
-			FQDNs = append(FQDNs, C.Target)
+	var lastErr error
+	for _, server := range DNSServers {
+		var msg dns.Msg
+		msg.SetQuestion(dns.Fqdn(FQDN), dns.TypeCNAME)
+		In, err := dns.Exchange(&msg, server)
+		if err != nil {
+			lastErr = err
+			if verbosity >= 2 {
+				outputMutex.Lock()
+				color.Yellow("[DNS Error] %s @ %s: %v", FQDN, server, err)
+				outputMutex.Unlock()
+			}
+			continue
 		}
+		if len(In.Answer) < 1 {
+			lastErr = errors.New("no records found")
+			continue
+		}
+		for _, answer := range In.Answer {
+			if C, ok := answer.(*dns.CNAME); ok {
+				FQDNs = append(FQDNs, C.Target)
+			}
+		}
+		return FQDNs, nil
 	}
-	return FQDNs, nil
+	return nil, lastErr
 }
 
-func LookupA(FQDN, DNSServerAddress string) ([]string, error) {
-	var msg dns.Msg
+func LookupA(FQDN string, DNSServers []string, verbosity int) ([]string, error) {
 	var IPs []string
-	msg.SetQuestion(dns.Fqdn(FQDN), dns.TypeA)
-	In, err := dns.Exchange(&msg, DNSServerAddress)
-	if err != nil {
-		return IPs, err
-	}
-
-	if len(In.Answer) < 1 {
-		return IPs, errors.New("No Records Found!")
-	}
-
-	for _, answer := range In.Answer {
-		if A, ok := answer.(*dns.A); ok {
-			IPs = append(IPs, A.A.String())
+	var lastErr error
+	for _, server := range DNSServers {
+		var msg dns.Msg
+		msg.SetQuestion(dns.Fqdn(FQDN), dns.TypeA)
+		In, err := dns.Exchange(&msg, server)
+		if err != nil {
+			lastErr = err
+			if verbosity >= 2 {
+				outputMutex.Lock()
+				color.Yellow("[DNS Error] %s @ %s: %v", FQDN, server, err)
+				outputMutex.Unlock()
+			}
+			continue
 		}
+		if len(In.Answer) < 1 {
+			lastErr = errors.New("no records found")
+			continue
+		}
+		for _, answer := range In.Answer {
+			if A, ok := answer.(*dns.A); ok {
+				IPs = append(IPs, A.A.String())
+			}
+		}
+		return IPs, nil
 	}
-	return IPs, nil
+	return nil, lastErr
 }
 
-func Lookup(FQDN, DNSServerAddress string, verbosity bool) []res {
+func Lookup(FQDN string, DNSServers []string, verbosity int) []res {
 	var results []res
 	var cFQDN = FQDN
 	for {
-		cnames, err := LookupCNAME(cFQDN, DNSServerAddress)
+		cnames, err := LookupCNAME(cFQDN, DNSServers, verbosity)
 		if err == nil && len(cnames) > 0 {
 			cFQDN = cnames[0]
 			continue
 		}
-		IPs, err := LookupA(cFQDN, DNSServerAddress)
+		IPs, err := LookupA(cFQDN, DNSServers, verbosity)
 		if err != nil {
 			break
 		}
@@ -76,8 +98,10 @@ func Lookup(FQDN, DNSServerAddress string, verbosity bool) []res {
 		for _, IP := range IPs {
 			result := res{IPAddress: IP, Hostname: FQDN}
 			results = append(results, result)
-			if verbosity {
-				fmt.Printf("Found subdomain: %s - %s\n", FQDN, IP)
+			if verbosity >= 1 {
+				outputMutex.Lock()
+				color.Cyan("[Found Subdomain] %s -> %s", FQDN, IP)
+				outputMutex.Unlock()
 			}
 		}
 		break
@@ -85,11 +109,11 @@ func Lookup(FQDN, DNSServerAddress string, verbosity bool) []res {
 	return results
 }
 
-func thread(wg *sync.WaitGroup, FQDNs chan string, results chan []res, DNSServerAddress string, verbosity bool) {
+func thread(wg *sync.WaitGroup, FQDNs chan string, results chan []res, DNSServers []string, verbosity int) {
 	defer wg.Done()
 	var subdomainResults []res
 	for FQDN := range FQDNs {
-		subdomainResults = append(subdomainResults, Lookup(FQDN, DNSServerAddress, verbosity)...)
+		subdomainResults = append(subdomainResults, Lookup(FQDN, DNSServers, verbosity)...)
 	}
 	results <- subdomainResults
 }
@@ -115,15 +139,16 @@ func AsCIIArt() {
 }
 
 func main() {
+	color.NoColor = false
 	AsCIIArt()
 	var (
-		Domain           = flag.String("d", "", "The domain you want to enumerate. [Required]\nExample: website.com")
-		Wordlist         = flag.String("w", "", "The wordlist path to use. [Required]\n Example: /path/to/wordlist")
-		Threads          = flag.Int("t", 75, "The amount of threads.")
-		DNSServerAddress = flag.String("s", "8.8.8.8:53", "The DNS server to use.\nNOTE: Pay attention to rate limiting restrictions")
-		OutputFile       = flag.String("o", "", "Output file (optional)")
-		OutputFormat     = flag.String("f", "json", "Output format: json, xml, md, or csv")
-		Verbosity        = flag.Bool("v", false, "Enable verbosity")
+		Domain       = flag.String("d", "", "The domain to enumerate (required)")
+		Wordlist     = flag.String("w", "", "Wordlist path (required)")
+		Threads      = flag.Int("t", 75, "Number of threads")
+		DNSServers   = flag.String("s", "8.8.8.8:53,1.1.1.1:53", "Comma-separated DNS servers")
+		OutputFile   = flag.String("o", "", "Output file (optional)")
+		OutputFormat = flag.String("f", "json", "Output format: json, xml, md, csv")
+		Verbosity    = flag.Int("v", 0, "Verbosity level: 0 [Silent], 1 [Show found subdomains], 2 [Show found subdomains and errors]")
 	)
 
 	flag.Parse()
@@ -132,10 +157,33 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	// Secret Key > 8gCbXWjA2fY1GDc5JiVKveuNpGURE1GWNkvPYb5pumfUYZVJGTPGkSQ3t25
-	var Enum string
-	Enum += "[*] Enumerating subdomains for " + *Domain
-	color.Yellow(Enum)
+
+	servers := strings.Split(*DNSServers, ",")
+	validServers := make([]string, 0)
+	for _, s := range servers {
+		trimmed := strings.TrimSpace(s)
+		if trimmed != "" {
+			validServers = append(validServers, trimmed)
+		}
+	}
+	if len(validServers) == 0 {
+		outputMutex.Lock()
+		color.Red("[!] No valid DNS servers provided")
+		outputMutex.Unlock()
+		os.Exit(1)
+	}
+
+	outputMutex.Lock()
+	switch *Verbosity {
+	case 0:
+		color.Yellow("[*] Verbosity level: %d [Silent]", *Verbosity)
+	case 1:
+		color.Yellow("[*] Verbosity level: %d [Show found subdomains]", *Verbosity)
+	default:
+		color.Yellow("[*] Verbosity level: %d [Show found subdomains and errors]", *Verbosity)
+		color.Yellow("[*] Using DNS servers: %v", validServers)
+	}
+	outputMutex.Unlock()
 
 	var wg sync.WaitGroup
 	FQDNs := make(chan string, *Threads)
@@ -151,8 +199,9 @@ func main() {
 
 	for i := 0; i < *Threads; i++ {
 		wg.Add(1)
-		go thread(&wg, FQDNs, results, *DNSServerAddress, *Verbosity)
+		go thread(&wg, FQDNs, results, validServers, *Verbosity)
 	}
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -173,100 +222,61 @@ func main() {
 		wg.Wait()
 		close(results)
 	}()
-	// b2ggSGkhCmNvb2tpZT8=
-	var allResults []res
 
+	var allResults []res
 	for subdomainResults := range results {
 		allResults = append(allResults, subdomainResults...)
 	}
 
 	Wri := tabwriter.NewWriter(os.Stdout, 5, 20, 8, ' ', 2)
-	var Enumed string
 	if len(allResults) < 1 {
-		color.Red("[*] No subdomains found! Try another wordlist or it may be a rate-limit restriction")
+		outputMutex.Lock()
+		color.Red("[!] No subdomains found")
+		outputMutex.Unlock()
 	} else {
-		Enumed += "[*] Enumerated subdomains for " + *Domain
+		outputMutex.Lock()
+		color.Green("[+] Found %d results", len(allResults))
+		outputMutex.Unlock()
 		for _, r := range allResults {
 			fmt.Fprintf(Wri, "%s\t%s\n", r.Hostname, r.IPAddress)
 		}
-		color.Green(Enumed)
 		Wri.Flush()
-		color.Green("[*] Finished")
+	}
 
-		if *OutputFile != "" {
-			switch *OutputFormat {
-			case "json":
-				outputData, err := json.Marshal(Output{Results: allResults})
-				if err != nil {
-					panic(err)
-				}
-				outputFile, err := os.Create(*OutputFile)
-				if err != nil {
-					panic(err)
-				}
-				defer outputFile.Close()
-				_, err = outputFile.Write(outputData)
-				if err != nil {
-					panic(err)
-				}
-				color.Green("[*] Results saved to", *OutputFile)
-
-			case "xml":
-				outputData, err := xml.MarshalIndent(Output{Results: allResults}, "", "  ")
-				if err != nil {
-					panic(err)
-				}
-				outputFile, err := os.Create(*OutputFile)
-				if err != nil {
-					panic(err)
-				}
-				defer outputFile.Close()
-				_, err = outputFile.Write(outputData)
-				if err != nil {
-					panic(err)
-				}
-				color.Green("[*] Results saved to", *OutputFile)
-
-			case "md":
-				fmt.Println("| Hostname | IP Address |")
-				fmt.Println("| -------- | ---------- |")
-				for _, r := range allResults {
-					fmt.Printf("| %s | %s |\n", r.Hostname, r.IPAddress)
-				}
-				if *OutputFile != "" {
-					outputFile, err := os.Create(*OutputFile)
-					if err != nil {
-						panic(err)
-					}
-					defer outputFile.Close()
-					for _, r := range allResults {
-						fmt.Fprintf(outputFile, "| %s | %s |\n", r.Hostname, r.IPAddress)
-					}
-					color.Green("[*] Results saved to %s", *OutputFile)
-				}
-
-			case "csv":
-				if *OutputFile != "" {
-					outputFile, err := os.Create(*OutputFile)
-					if err != nil {
-						panic(err)
-					}
-					defer outputFile.Close()
-					fmt.Fprintf(outputFile, "Hostname,IP Address\n")
-					for _, r := range allResults {
-						fmt.Fprintf(outputFile, "%s,%s\n", r.Hostname, r.IPAddress)
-					}
-					color.Green("[*] Results saved to %s", *OutputFile)
-				} else {
-					fmt.Printf("Hostname,IP Address\n")
-					for _, r := range allResults {
-						fmt.Printf("%s,%s\n", r.Hostname, r.IPAddress)
-					}
-				}
-			default:
-				color.Red("Unsupported output format. Use 'json', 'xml', 'md', or 'csv.")
-				os.Exit(1)
+	if *OutputFile != "" {
+		switch *OutputFormat {
+		case "json":
+			outputData, err := json.Marshal(Output{Results: allResults})
+			if err != nil {
+				panic(err)
 			}
+			os.WriteFile(*OutputFile, outputData, 0644)
+		case "xml":
+			outputData, err := xml.MarshalIndent(Output{Results: allResults}, "", "  ")
+			if err != nil {
+				panic(err)
+			}
+			os.WriteFile(*OutputFile, outputData, 0644)
+		case "md":
+			content := "| Hostname | IP Address |\n| -------- | ---------- |\n"
+			for _, r := range allResults {
+				content += fmt.Sprintf("| %s | %s |\n", r.Hostname, r.IPAddress)
+			}
+			os.WriteFile(*OutputFile, []byte(content), 0644)
+		case "csv":
+			content := "Hostname,IP Address\n"
+			for _, r := range allResults {
+				content += fmt.Sprintf("%s,%s\n", r.Hostname, r.IPAddress)
+			}
+			os.WriteFile(*OutputFile, []byte(content), 0644)
+		default:
+			outputMutex.Lock()
+			color.Red("[!] Unsupported output format")
+			outputMutex.Unlock()
+			os.Exit(1)
 		}
+		outputMutex.Lock()
+		color.Green("[+] Results saved to %s", *OutputFile)
+		outputMutex.Unlock()
 	}
 }
