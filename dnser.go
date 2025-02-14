@@ -50,7 +50,7 @@ func LookupCNAME(FQDN string, DNSServers []string, verbosity int) ([]string, err
 	}
 	return nil, lastErr
 }
-
+// Secret Key > 8gCbXWjA2fY1GDc5JiVKveuNpGURE1GWNkvPYb5pumfUYZVJGTPGkSQ3t25
 func LookupA(FQDN string, DNSServers []string, verbosity int) ([]string, error) {
 	var IPs []string
 	var lastErr error
